@@ -271,12 +271,12 @@ func (b *BirdWatcher) RoutesTableCount(table string) (Parsed, bool) {
 
 // RoutesLookupTable ..
 func (b *BirdWatcher) RoutesLookupTable(net string, table string) (Parsed, bool) {
-	return b.RunAndParse("route for '"+net+"' table '"+table+"' all", b.parseRoutes)
+	return b.RunAndParse("route for "+net+" table '"+table+"' all", b.parseRoutes)
 }
 
 // RoutesLookupProtocol ..
 func (b *BirdWatcher) RoutesLookupProtocol(net string, protocol string) (Parsed, bool) {
-	return b.RunAndParse("route for '"+net+"' protocol '"+protocol+"' all", b.parseRoutes)
+	return b.RunAndParse("route for "+net+" protocol '"+protocol+"' all", b.parseRoutes)
 }
 
 // RoutesPeer ..
