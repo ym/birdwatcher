@@ -9,8 +9,7 @@ import (
 )
 
 var (
-	ParserConf ParserConfig
-	regex      struct {
+	regex struct {
 		lineSeperator *regexp.Regexp
 		status        struct {
 			startLine     *regexp.Regexp
@@ -102,7 +101,7 @@ func specialLine(line string) bool {
 	return (strings.HasPrefix(line, "BIRD") || strings.HasPrefix(line, "Access restricted"))
 }
 
-func parseStatus(reader io.Reader) Parsed {
+func (b *BirdWatcher) parseStatus(reader io.Reader) Parsed {
 	res := Parsed{}
 
 	lines := newLineIterator(reader, true)
@@ -125,7 +124,7 @@ func parseStatus(reader io.Reader) Parsed {
 	}
 
 	for k := range res {
-		if dirtyContains(ParserConf.FilterFields, k) {
+		if dirtyContains(b.ParserConf.FilterFields, k) {
 			res[k] = nil
 		}
 	}
@@ -133,7 +132,7 @@ func parseStatus(reader io.Reader) Parsed {
 	return Parsed{"status": res}
 }
 
-func parseProtocols(reader io.Reader) Parsed {
+func (b *BirdWatcher) parseProtocols(reader io.Reader) Parsed {
 	res := Parsed{}
 	protocols := []string{}
 
@@ -157,7 +156,7 @@ func parseProtocols(reader io.Reader) Parsed {
 	return res
 }
 
-func parseSymbols(reader io.Reader) Parsed {
+func (b *BirdWatcher) parseSymbols(reader io.Reader) Parsed {
 	res := Parsed{}
 
 	lines := newLineIterator(reader, true)
@@ -177,7 +176,7 @@ func parseSymbols(reader io.Reader) Parsed {
 	return Parsed{"symbols": res}
 }
 
-func parseRoutes(reader io.Reader) Parsed {
+func (b *BirdWatcher) parseRoutes(reader io.Reader) Parsed {
 	res := Parsed{}
 	routes := []Parsed{}
 	route := Parsed{}
@@ -199,20 +198,20 @@ func parseRoutes(reader io.Reader) Parsed {
 				route = Parsed{}
 			}
 
-			parseMainRouteDetailBird2(regex.routes.prefixBird2.FindStringSubmatch(line), route, formerPrefix)
+			b.parseMainRouteDetailBird2(regex.routes.prefixBird2.FindStringSubmatch(line), route, formerPrefix)
 		} else if regex.routes.startDefinition.MatchString(line) {
 			if len(route) > 0 {
 				routes = append(routes, route)
 				route = Parsed{}
 			}
 
-			parseMainRouteDetail(regex.routes.startDefinition.FindStringSubmatch(line), route)
+			b.parseMainRouteDetail(regex.routes.startDefinition.FindStringSubmatch(line), route)
 		} else if regex.routes.gatewayBird2.MatchString(line) {
-			parseRoutesGatewayBird2(regex.routes.gatewayBird2.FindStringSubmatch(line), route)
+			b.parseRoutesGatewayBird2(regex.routes.gatewayBird2.FindStringSubmatch(line), route)
 		} else if regex.routes.second.MatchString(line) {
 			routes = append(routes, route)
 
-			route = parseRoutesSecond(line, route)
+			route = b.parseRoutesSecond(line, route)
 		} else if regex.routes.routeType.MatchString(line) {
 			submatch := regex.routes.routeType.FindStringSubmatch(line)[1]
 			route["type"] = strings.Split(submatch, " ")
@@ -224,7 +223,7 @@ func parseRoutes(reader io.Reader) Parsed {
 				}
 			}
 
-			parseRoutesBgp(line, bgp)
+			b.parseRoutesBgp(line, bgp)
 			route["bgp"] = bgp
 		}
 	}
@@ -237,7 +236,7 @@ func parseRoutes(reader io.Reader) Parsed {
 	return res
 }
 
-func parseMainRouteDetail(groups []string, route Parsed) {
+func (b *BirdWatcher) parseMainRouteDetail(groups []string, route Parsed) {
 	route["network"] = groups[1]
 	route["gateway"] = groups[2]
 	route["interface"] = groups[3]
@@ -248,13 +247,13 @@ func parseMainRouteDetail(groups []string, route Parsed) {
 	route["metric"] = parseInt(groups[8])
 
 	for k := range route {
-		if dirtyContains(ParserConf.FilterFields, k) {
+		if dirtyContains(b.ParserConf.FilterFields, k) {
 			route[k] = nil
 		}
 	}
 }
 
-func parseMainRouteDetailBird2(groups []string, route Parsed, formerPrefix string) {
+func (b *BirdWatcher) parseMainRouteDetailBird2(groups []string, route Parsed, formerPrefix string) {
 	if len(groups[1]) > 0 {
 		route["network"] = groups[1]
 	} else {
@@ -268,18 +267,18 @@ func parseMainRouteDetailBird2(groups []string, route Parsed, formerPrefix strin
 	route["metric"] = parseInt(groups[6])
 
 	for k := range route {
-		if dirtyContains(ParserConf.FilterFields, k) {
+		if dirtyContains(b.ParserConf.FilterFields, k) {
 			route[k] = nil
 		}
 	}
 }
 
-func parseRoutesGatewayBird2(groups []string, route Parsed) {
+func (b *BirdWatcher) parseRoutesGatewayBird2(groups []string, route Parsed) {
 	route["gateway"] = groups[1]
 	route["interface"] = groups[2]
 }
 
-func parseRoutesSecond(line string, route Parsed) Parsed {
+func (b *BirdWatcher) parseRoutesSecond(line string, route Parsed) Parsed {
 	tmp, ok := route["network"]
 	if !ok {
 		return route
@@ -296,17 +295,17 @@ func parseRoutesSecond(line string, route Parsed) Parsed {
 	groups = append([]string{network}, groups...)
 	groups = append([]string{first}, groups...)
 
-	parseMainRouteDetail(groups, route)
+	b.parseMainRouteDetail(groups, route)
 	return route
 }
 
-func parseRoutesBgp(line string, bgp Parsed) {
+func (b *BirdWatcher) parseRoutesBgp(line string, bgp Parsed) {
 	groups := regex.routes.bgp.FindStringSubmatch(line)
 
 	if groups[1] == "community" {
-		parseRoutesCommunities(groups, bgp)
+		b.parseRoutesCommunities(groups, bgp)
 	} else if groups[1] == "large_community" {
-		parseRoutesLargeCommunities(groups, bgp)
+		b.parseRoutesLargeCommunities(groups, bgp)
 	} else if groups[1] == "as_path" {
 		bgp["as_path"] = strings.Split(groups[2], " ")
 	} else {
@@ -314,7 +313,7 @@ func parseRoutesBgp(line string, bgp Parsed) {
 	}
 }
 
-func parseRoutesCommunities(groups []string, res Parsed) {
+func (b *BirdWatcher) parseRoutesCommunities(groups []string, res Parsed) {
 	communities := [][]int64{}
 	for _, community := range regex.routes.origin.FindAllString(groups[2], -1) {
 		if regex.routes.community.MatchString(community) {
@@ -328,7 +327,7 @@ func parseRoutesCommunities(groups []string, res Parsed) {
 	res["communities"] = communities
 }
 
-func parseRoutesLargeCommunities(groups []string, res Parsed) {
+func (b *BirdWatcher) parseRoutesLargeCommunities(groups []string, res Parsed) {
 	communities := [][]int64{}
 	for _, community := range regex.routes.origin.FindAllString(groups[2], -1) {
 		if regex.routes.largeCommunity.MatchString(community) {
@@ -343,7 +342,7 @@ func parseRoutesLargeCommunities(groups []string, res Parsed) {
 	res["large_communities"] = communities
 }
 
-func parseRoutesCount(reader io.Reader) Parsed {
+func (b *BirdWatcher) parseRoutesCount(reader io.Reader) Parsed {
 	res := Parsed{}
 
 	lines := newLineIterator(reader, true)
@@ -376,14 +375,14 @@ func (b *BirdWatcher) parseBgp(lines string) Parsed {
 	routeChanges := Parsed{}
 
 	handlers := []func(string) bool{
-		func(l string) bool { return parseBgpProtocol(l, res) },
-		func(l string) bool { return parseBgpRouteLine(l, res) },
-		func(l string) bool { return parseBgpImportUpdates(l, routeChanges) },
-		func(l string) bool { return parseBgpImportWithdraws(l, routeChanges) },
-		func(l string) bool { return parseBgpExportUpdates(l, routeChanges) },
-		func(l string) bool { return parseBgpExportWithdraws(l, routeChanges) },
-		func(l string) bool { return parseBgpNumberValuesRx(l, res) },
-		func(l string) bool { return parseBgpStringValuesRx(l, res) },
+		func(l string) bool { return b.parseBgpProtocol(l, res) },
+		func(l string) bool { return b.parseBgpRouteLine(l, res) },
+		func(l string) bool { return b.parseBgpImportUpdates(l, routeChanges) },
+		func(l string) bool { return b.parseBgpImportWithdraws(l, routeChanges) },
+		func(l string) bool { return b.parseBgpExportUpdates(l, routeChanges) },
+		func(l string) bool { return b.parseBgpExportWithdraws(l, routeChanges) },
+		func(l string) bool { return b.parseBgpNumberValuesRx(l, res) },
+		func(l string) bool { return b.parseBgpStringValuesRx(l, res) },
 	}
 
 	ipVersion := ""
@@ -398,7 +397,7 @@ func (b *BirdWatcher) parseBgp(lines string) Parsed {
 		}
 
 		if b.isCorrectChannel(ipVersion) {
-			parseLine(line, handlers)
+			b.parseLine(line, handlers)
 		}
 	}
 
@@ -417,7 +416,7 @@ func (b *BirdWatcher) parseBgp(lines string) Parsed {
 	return res
 }
 
-func parseLine(line string, handlers []func(string) bool) {
+func (b *BirdWatcher) parseLine(line string, handlers []func(string) bool) {
 	for _, h := range handlers {
 		if h(line) {
 			return
@@ -425,7 +424,7 @@ func parseLine(line string, handlers []func(string) bool) {
 	}
 }
 
-func parseBgpProtocol(line string, res Parsed) bool {
+func (b *BirdWatcher) parseBgpProtocol(line string, res Parsed) bool {
 	groups := regex.bgp.protocol.FindStringSubmatch(line)
 	if groups == nil {
 		return false
@@ -440,18 +439,18 @@ func parseBgpProtocol(line string, res Parsed) bool {
 	return true
 }
 
-func parseBgpRouteLine(line string, res Parsed) bool {
+func (b *BirdWatcher) parseBgpRouteLine(line string, res Parsed) bool {
 	groups := regex.bgp.routes.FindStringSubmatch(line)
 	if groups == nil {
 		return false
 	}
 
-	routes := parseBgpRoutes(groups[1])
+	routes := b.parseBgpRoutes(groups[1])
 	res["routes"] = routes
 	return true
 }
 
-func parseBgpImportUpdates(line string, res Parsed) bool {
+func (b *BirdWatcher) parseBgpImportUpdates(line string, res Parsed) bool {
 	groups := regex.bgp.importUpdates.FindStringSubmatch(line)
 	if groups == nil {
 		return false
@@ -468,7 +467,7 @@ func parseBgpImportUpdates(line string, res Parsed) bool {
 	return true
 }
 
-func parseBgpImportWithdraws(line string, res Parsed) bool {
+func (b *BirdWatcher) parseBgpImportWithdraws(line string, res Parsed) bool {
 	groups := regex.bgp.importWithdraws.FindStringSubmatch(line)
 	if groups == nil {
 		return false
@@ -484,7 +483,7 @@ func parseBgpImportWithdraws(line string, res Parsed) bool {
 	return true
 }
 
-func parseBgpExportUpdates(line string, res Parsed) bool {
+func (b *BirdWatcher) parseBgpExportUpdates(line string, res Parsed) bool {
 	groups := regex.bgp.exportUpdates.FindStringSubmatch(line)
 	if groups == nil {
 		return false
@@ -500,7 +499,7 @@ func parseBgpExportUpdates(line string, res Parsed) bool {
 	return true
 }
 
-func parseBgpExportWithdraws(line string, res Parsed) bool {
+func (b *BirdWatcher) parseBgpExportWithdraws(line string, res Parsed) bool {
 	groups := regex.bgp.exportWithdraws.FindStringSubmatch(line)
 	if groups == nil {
 		return false
@@ -514,7 +513,7 @@ func parseBgpExportWithdraws(line string, res Parsed) bool {
 	return true
 }
 
-func parseBgpNumberValuesRx(line string, res Parsed) bool {
+func (b *BirdWatcher) parseBgpNumberValuesRx(line string, res Parsed) bool {
 	groups := regex.bgp.numericValue.FindStringSubmatch(line)
 	if groups == nil {
 		return false
@@ -525,7 +524,7 @@ func parseBgpNumberValuesRx(line string, res Parsed) bool {
 	return true
 }
 
-func parseBgpStringValuesRx(line string, res Parsed) bool {
+func (b *BirdWatcher) parseBgpStringValuesRx(line string, res Parsed) bool {
 	groups := regex.bgp.stringValue.FindStringSubmatch(line)
 	if groups == nil {
 		return false
@@ -553,7 +552,7 @@ func parseInt(from string) int64 {
 	return val
 }
 
-func parseBgpRoutes(input string) Parsed {
+func (b *BirdWatcher) parseBgpRoutes(input string) Parsed {
 	routes := Parsed{}
 
 	// Input: 1 imported, 0 filtered, 2 exported, 1 preferred

@@ -15,6 +15,7 @@ import (
 type BirdWatcher struct {
 	ClientConf    BirdConfig
 	StatusConf    StatusConfig
+	ParserConf    ParserConfig
 	IPVersion     string
 	RateLimitConf struct {
 		sync.RWMutex
@@ -28,10 +29,12 @@ type Cache struct {
 	m map[string]Parsed
 }
 
-func NewBirdWatcher(clientConf BirdConfig, statusConfig StatusConfig, ipVersion string) BirdWatcher {
+// NewBirdWatcher ..
+func NewBirdWatcher(clientConf BirdConfig, statusConfig StatusConfig, parserConfig ParserConfig, ipVersion string) BirdWatcher {
 	return BirdWatcher{
 		ClientConf: clientConf,
 		StatusConf: statusConfig,
+		ParserConf: parserConfig,
 		IPVersion:  ipVersion,
 		Cache:      Cache{m: make(map[string]Parsed)},
 	}
@@ -138,7 +141,7 @@ func (b *BirdWatcher) RunAndParse(cmd string, parser func(io.Reader) Parsed) (Pa
 
 // Status ..
 func (b *BirdWatcher) Status() (Parsed, bool) {
-	birdStatus, ok := b.RunAndParse("status", parseStatus)
+	birdStatus, ok := b.RunAndParse("status", b.parseStatus)
 	if isSpecial(birdStatus) {
 		return birdStatus, ok
 	}
@@ -175,7 +178,7 @@ func (b *BirdWatcher) Status() (Parsed, bool) {
 
 // Protocols ..
 func (b *BirdWatcher) Protocols() (Parsed, bool) {
-	return b.RunAndParse("protocols all", parseProtocols)
+	return b.RunAndParse("protocols all", b.parseProtocols)
 }
 
 // ProtocolsBgp ..
@@ -200,37 +203,37 @@ func (b *BirdWatcher) ProtocolsBgp() (Parsed, bool) {
 
 // Symbols ..
 func (b *BirdWatcher) Symbols() (Parsed, bool) {
-	return b.RunAndParse("symbols", parseSymbols)
+	return b.RunAndParse("symbols", b.parseSymbols)
 }
 
 // RoutesPrefixed ..
 func (b *BirdWatcher) RoutesPrefixed(prefix string) (Parsed, bool) {
 	cmd := b.routeQueryForChannel("route all")
-	return b.RunAndParse(cmd, parseRoutes)
+	return b.RunAndParse(cmd, b.parseRoutes)
 }
 
 // RoutesProto ..
 func (b *BirdWatcher) RoutesProto(protocol string) (Parsed, bool) {
 	cmd := b.routeQueryForChannel("route all protocol " + protocol)
-	return b.RunAndParse(cmd, parseRoutes)
+	return b.RunAndParse(cmd, b.parseRoutes)
 }
 
 // RoutesProtoCount ..
 func (b *BirdWatcher) RoutesProtoCount(protocol string) (Parsed, bool) {
 	cmd := b.routeQueryForChannel("route protocol "+protocol) + " count"
-	return b.RunAndParse(cmd, parseRoutes)
+	return b.RunAndParse(cmd, b.parseRoutes)
 }
 
 // RoutesFiltered ..
 func (b *BirdWatcher) RoutesFiltered(protocol string) (Parsed, bool) {
 	cmd := b.routeQueryForChannel("route all filtered " + protocol)
-	return b.RunAndParse(cmd, parseRoutes)
+	return b.RunAndParse(cmd, b.parseRoutes)
 }
 
 // RoutesExport ..
 func (b *BirdWatcher) RoutesExport(protocol string) (Parsed, bool) {
 	cmd := b.routeQueryForChannel("route all export " + protocol)
-	return b.RunAndParse(cmd, parseRoutes)
+	return b.RunAndParse(cmd, b.parseRoutes)
 }
 
 // RoutesNoExport ..
@@ -238,53 +241,53 @@ func (b *BirdWatcher) RoutesNoExport(protocol string) (Parsed, bool) {
 
 	// In case we have a multi table setup, we have to query
 	// the pipe protocol.
-	if ParserConf.PerPeerTables &&
-		strings.HasPrefix(protocol, ParserConf.PeerProtocolPrefix) {
+	if b.ParserConf.PerPeerTables &&
+		strings.HasPrefix(protocol, b.ParserConf.PeerProtocolPrefix) {
 
 		// Replace prefix
-		protocol = ParserConf.PipeProtocolPrefix +
-			protocol[len(ParserConf.PeerProtocolPrefix):]
+		protocol = b.ParserConf.PipeProtocolPrefix +
+			protocol[len(b.ParserConf.PeerProtocolPrefix):]
 	}
 
 	cmd := b.routeQueryForChannel("route all noexport " + protocol)
-	return b.RunAndParse(cmd, parseRoutes)
+	return b.RunAndParse(cmd, b.parseRoutes)
 }
 
 // RoutesExportCount ..
 func (b *BirdWatcher) RoutesExportCount(protocol string) (Parsed, bool) {
 	cmd := b.routeQueryForChannel("route export "+protocol) + " count"
-	return b.RunAndParse(cmd, parseRoutesCount)
+	return b.RunAndParse(cmd, b.parseRoutesCount)
 }
 
 // RoutesTable ..
 func (b *BirdWatcher) RoutesTable(table string) (Parsed, bool) {
-	return b.RunAndParse("route table '"+table+"' all", parseRoutes)
+	return b.RunAndParse("route table '"+table+"' all", b.parseRoutes)
 }
 
 // RoutesTableCount ..
 func (b *BirdWatcher) RoutesTableCount(table string) (Parsed, bool) {
-	return b.RunAndParse("route table '"+table+"' count", parseRoutesCount)
+	return b.RunAndParse("route table '"+table+"' count", b.parseRoutesCount)
 }
 
 // RoutesLookupTable ..
 func (b *BirdWatcher) RoutesLookupTable(net string, table string) (Parsed, bool) {
-	return b.RunAndParse("route for '"+net+"' table '"+table+"' all", parseRoutes)
+	return b.RunAndParse("route for '"+net+"' table '"+table+"' all", b.parseRoutes)
 }
 
 // RoutesLookupProtocol ..
 func (b *BirdWatcher) RoutesLookupProtocol(net string, protocol string) (Parsed, bool) {
-	return b.RunAndParse("route for '"+net+"' protocol '"+protocol+"' all", parseRoutes)
+	return b.RunAndParse("route for '"+net+"' protocol '"+protocol+"' all", b.parseRoutes)
 }
 
 // RoutesPeer ..
 func (b *BirdWatcher) RoutesPeer(peer string) (Parsed, bool) {
 	cmd := b.routeQueryForChannel("route export " + peer)
-	return b.RunAndParse(cmd, parseRoutes)
+	return b.RunAndParse(cmd, b.parseRoutes)
 }
 
 // RoutesDump ..
 func (b *BirdWatcher) RoutesDump() (Parsed, bool) {
-	if ParserConf.PerPeerTables {
+	if b.ParserConf.PerPeerTables {
 		return b.RoutesDumpPerPeerTable()
 	}
 
@@ -293,8 +296,8 @@ func (b *BirdWatcher) RoutesDump() (Parsed, bool) {
 
 // RoutesDumpSingleTable ..
 func (b *BirdWatcher) RoutesDumpSingleTable() (Parsed, bool) {
-	importedRes, cached := b.RunAndParse(b.routeQueryForChannel("route all"), parseRoutes)
-	filteredRes, _ := b.RunAndParse(b.routeQueryForChannel("route all filtered"), parseRoutes)
+	importedRes, cached := b.RunAndParse(b.routeQueryForChannel("route all"), b.parseRoutes)
+	filteredRes, _ := b.RunAndParse(b.routeQueryForChannel("route all filtered"), b.parseRoutes)
 
 	imported := importedRes["routes"]
 	filtered := filteredRes["routes"]
@@ -309,7 +312,7 @@ func (b *BirdWatcher) RoutesDumpSingleTable() (Parsed, bool) {
 
 // RoutesDumpPerPeerTable ..
 func (b *BirdWatcher) RoutesDumpPerPeerTable() (Parsed, bool) {
-	importedRes, cached := b.RunAndParse(b.routeQueryForChannel("route all"), parseRoutes)
+	importedRes, cached := b.RunAndParse(b.routeQueryForChannel("route all"), b.parseRoutes)
 	imported := importedRes["routes"]
 	filtered := []Parsed{}
 
