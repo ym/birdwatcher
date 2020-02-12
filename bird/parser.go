@@ -363,15 +363,15 @@ func parseRoutesCount(reader io.Reader) Parsed {
 	return res
 }
 
-func isCorrectChannel(currentIPVersion string) bool {
+func (b *BirdWatcher) isCorrectChannel(currentIPVersion string) bool {
 	if len(currentIPVersion) == 0 {
 		return true
 	}
 
-	return currentIPVersion == IPVersion
+	return currentIPVersion == b.IPVersion
 }
 
-func parseBgp(lines string) Parsed {
+func (b *BirdWatcher) parseBgp(lines string) Parsed {
 	res := Parsed{}
 	routeChanges := Parsed{}
 
@@ -397,7 +397,7 @@ func parseBgp(lines string) Parsed {
 			ipVersion = m[1]
 		}
 
-		if isCorrectChannel(ipVersion) {
+		if b.isCorrectChannel(ipVersion) {
 			parseLine(line, handlers)
 		}
 	}

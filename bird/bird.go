@@ -12,18 +12,30 @@ import (
 	"os/exec"
 )
 
-var ClientConf BirdConfig
-var StatusConf StatusConfig
-var IPVersion = "4"
-var RateLimitConf struct {
-	sync.RWMutex
-	Conf RateLimitConfig
+type BirdWatcher struct {
+	ClientConf    BirdConfig
+	StatusConf    StatusConfig
+	IPVersion     string
+	RateLimitConf struct {
+		sync.RWMutex
+		Conf RateLimitConfig
+	}
+	Cache Cache
 }
 
-var Cache = struct {
+type Cache struct {
 	sync.RWMutex
 	m map[string]Parsed
-}{m: make(map[string]Parsed)}
+}
+
+func NewBirdWatcher(clientConf BirdConfig, statusConfig StatusConfig, ipVersion string) BirdWatcher {
+	return BirdWatcher{
+		ClientConf: clientConf,
+		StatusConf: statusConfig,
+		IPVersion:  ipVersion,
+		Cache:      Cache{m: make(map[string]Parsed)},
+	}
+}
 
 var NilParse Parsed = (Parsed)(nil)
 var BirdError Parsed = Parsed{"error": "bird unreachable"}
@@ -32,10 +44,10 @@ func isSpecial(ret Parsed) bool {
 	return reflect.DeepEqual(ret, NilParse) || reflect.DeepEqual(ret, BirdError)
 }
 
-func fromCache(key string) (Parsed, bool) {
-	Cache.RLock()
-	val, ok := Cache.m[key]
-	Cache.RUnlock()
+func (b *BirdWatcher) fromCache(key string) (Parsed, bool) {
+	b.Cache.RLock()
+	val, ok := b.Cache.m[key]
+	b.Cache.RUnlock()
 	if !ok {
 		return NilParse, false
 	}
@@ -48,18 +60,19 @@ func fromCache(key string) (Parsed, bool) {
 	return val, ok
 }
 
-func toCache(key string, val Parsed) {
+func (b *BirdWatcher) toCache(key string, val Parsed) {
 	val["ttl"] = time.Now().Add(5 * time.Minute)
-	Cache.Lock()
-	Cache.m[key] = val
-	Cache.Unlock()
+	b.Cache.Lock()
+	b.Cache.m[key] = val
+	b.Cache.Unlock()
 }
 
-func Run(args string) (io.Reader, error) {
+// Run ..
+func (b *BirdWatcher) Run(args string) (io.Reader, error) {
 	args = "show " + args
 	argsList := strings.Split(args, " ")
 
-	out, err := exec.Command(ClientConf.BirdCmd, argsList...).Output()
+	out, err := exec.Command(b.ClientConf.BirdCmd, argsList...).Output()
 	if err != nil {
 		return nil, err
 	}
@@ -67,62 +80,65 @@ func Run(args string) (io.Reader, error) {
 	return bytes.NewReader(out), nil
 }
 
-func InstallRateLimitReset() {
+// InstallRateLimitReset ..
+func (b *BirdWatcher) InstallRateLimitReset() {
 	go func() {
 		c := time.Tick(time.Second)
 
-		for _ = range c {
-			RateLimitConf.Lock()
-			RateLimitConf.Conf.Reqs = RateLimitConf.Conf.Max
-			RateLimitConf.Unlock()
+		for range c {
+			b.RateLimitConf.Lock()
+			b.RateLimitConf.Conf.Reqs = b.RateLimitConf.Conf.Max
+			b.RateLimitConf.Unlock()
 		}
 	}()
 }
 
-func checkRateLimit() bool {
-	RateLimitConf.RLock()
-	check := !RateLimitConf.Conf.Enabled
-	RateLimitConf.RUnlock()
+func (b *BirdWatcher) checkRateLimit() bool {
+	b.RateLimitConf.RLock()
+	check := !b.RateLimitConf.Conf.Enabled
+	b.RateLimitConf.RUnlock()
 	if check {
 		return true
 	}
 
-	RateLimitConf.RLock()
-	check = RateLimitConf.Conf.Reqs < 1
-	RateLimitConf.RUnlock()
+	b.RateLimitConf.RLock()
+	check = b.RateLimitConf.Conf.Reqs < 1
+	b.RateLimitConf.RUnlock()
 	if check {
 		return false
 	}
 
-	RateLimitConf.Lock()
-	RateLimitConf.Conf.Reqs -= 1
-	RateLimitConf.Unlock()
+	b.RateLimitConf.Lock()
+	b.RateLimitConf.Conf.Reqs--
+	b.RateLimitConf.Unlock()
 
 	return true
 }
 
-func RunAndParse(cmd string, parser func(io.Reader) Parsed) (Parsed, bool) {
-	if val, ok := fromCache(cmd); ok {
+// RunAndParse ..
+func (b *BirdWatcher) RunAndParse(cmd string, parser func(io.Reader) Parsed) (Parsed, bool) {
+	if val, ok := b.fromCache(cmd); ok {
 		return val, true
 	}
 
-	if !checkRateLimit() {
+	if !b.checkRateLimit() {
 		return NilParse, false
 	}
 
-	out, err := Run(cmd)
+	out, err := b.Run(cmd)
 	if err != nil {
 		// ignore errors for now
 		return BirdError, false
 	}
 
 	parsed := parser(out)
-	toCache(cmd, parsed)
+	b.toCache(cmd, parsed)
 	return parsed, false
 }
 
-func Status() (Parsed, bool) {
-	birdStatus, ok := RunAndParse("status", parseStatus)
+// Status ..
+func (b *BirdWatcher) Status() (Parsed, bool) {
+	birdStatus, ok := b.RunAndParse("status", parseStatus)
 	if isSpecial(birdStatus) {
 		return birdStatus, ok
 	}
@@ -130,25 +146,25 @@ func Status() (Parsed, bool) {
 
 	// Last Reconfig Timestamp source:
 	var lastReconfig string
-	switch StatusConf.ReconfigTimestampSource {
+	switch b.StatusConf.ReconfigTimestampSource {
 	case "bird":
 		lastReconfig = status["last_reconfig"].(string)
 		break
 	case "config_modified":
 		lastReconfig = lastReconfigTimestampFromFileStat(
-			ClientConf.ConfigFilename,
+			b.ClientConf.ConfigFilename,
 		)
 	case "config_regex":
 		lastReconfig = lastReconfigTimestampFromFileContent(
-			ClientConf.ConfigFilename,
-			StatusConf.ReconfigTimestampMatch,
+			b.ClientConf.ConfigFilename,
+			b.StatusConf.ReconfigTimestampMatch,
 		)
 	}
 
 	status["last_reconfig"] = lastReconfig
 
 	// Filter fields
-	for _, field := range StatusConf.FilterFields {
+	for _, field := range b.StatusConf.FilterFields {
 		status[field] = nil
 	}
 
@@ -157,14 +173,16 @@ func Status() (Parsed, bool) {
 	return birdStatus, ok
 }
 
-func Protocols() (Parsed, bool) {
-	return RunAndParse("protocols all", parseProtocols)
+// Protocols ..
+func (b *BirdWatcher) Protocols() (Parsed, bool) {
+	return b.RunAndParse("protocols all", parseProtocols)
 }
 
-func ProtocolsBgp() (Parsed, bool) {
-	p, from_cache := Protocols()
+// ProtocolsBgp ..
+func (b *BirdWatcher) ProtocolsBgp() (Parsed, bool) {
+	p, fromCache := b.Protocols()
 	if isSpecial(p) {
-		return p, from_cache
+		return p, fromCache
 	}
 	protocols := p["protocols"].([]string)
 
@@ -173,43 +191,50 @@ func ProtocolsBgp() (Parsed, bool) {
 	for _, v := range protocols {
 		if strings.Contains(v, " BGP ") {
 			key := strings.Split(v, " ")[0]
-			bgpProto[key] = parseBgp(v)
+			bgpProto[key] = b.parseBgp(v)
 		}
 	}
 
-	return Parsed{"protocols": bgpProto, "ttl": p["ttl"]}, from_cache
+	return Parsed{"protocols": bgpProto, "ttl": p["ttl"]}, fromCache
 }
 
-func Symbols() (Parsed, bool) {
-	return RunAndParse("symbols", parseSymbols)
+// Symbols ..
+func (b *BirdWatcher) Symbols() (Parsed, bool) {
+	return b.RunAndParse("symbols", parseSymbols)
 }
 
-func RoutesPrefixed(prefix string) (Parsed, bool) {
-	cmd := routeQueryForChannel("route all")
-	return RunAndParse(cmd, parseRoutes)
+// RoutesPrefixed ..
+func (b *BirdWatcher) RoutesPrefixed(prefix string) (Parsed, bool) {
+	cmd := b.routeQueryForChannel("route all")
+	return b.RunAndParse(cmd, parseRoutes)
 }
 
-func RoutesProto(protocol string) (Parsed, bool) {
-	cmd := routeQueryForChannel("route all protocol " + protocol)
-	return RunAndParse(cmd, parseRoutes)
+// RoutesProto ..
+func (b *BirdWatcher) RoutesProto(protocol string) (Parsed, bool) {
+	cmd := b.routeQueryForChannel("route all protocol " + protocol)
+	return b.RunAndParse(cmd, parseRoutes)
 }
 
-func RoutesProtoCount(protocol string) (Parsed, bool) {
-	cmd := routeQueryForChannel("route protocol "+protocol) + " count"
-	return RunAndParse(cmd, parseRoutes)
+// RoutesProtoCount ..
+func (b *BirdWatcher) RoutesProtoCount(protocol string) (Parsed, bool) {
+	cmd := b.routeQueryForChannel("route protocol "+protocol) + " count"
+	return b.RunAndParse(cmd, parseRoutes)
 }
 
-func RoutesFiltered(protocol string) (Parsed, bool) {
-	cmd := routeQueryForChannel("route all filtered " + protocol)
-	return RunAndParse(cmd, parseRoutes)
+// RoutesFiltered ..
+func (b *BirdWatcher) RoutesFiltered(protocol string) (Parsed, bool) {
+	cmd := b.routeQueryForChannel("route all filtered " + protocol)
+	return b.RunAndParse(cmd, parseRoutes)
 }
 
-func RoutesExport(protocol string) (Parsed, bool) {
-	cmd := routeQueryForChannel("route all export " + protocol)
-	return RunAndParse(cmd, parseRoutes)
+// RoutesExport ..
+func (b *BirdWatcher) RoutesExport(protocol string) (Parsed, bool) {
+	cmd := b.routeQueryForChannel("route all export " + protocol)
+	return b.RunAndParse(cmd, parseRoutes)
 }
 
-func RoutesNoExport(protocol string) (Parsed, bool) {
+// RoutesNoExport ..
+func (b *BirdWatcher) RoutesNoExport(protocol string) (Parsed, bool) {
 
 	// In case we have a multi table setup, we have to query
 	// the pipe protocol.
@@ -221,47 +246,55 @@ func RoutesNoExport(protocol string) (Parsed, bool) {
 			protocol[len(ParserConf.PeerProtocolPrefix):]
 	}
 
-	cmd := routeQueryForChannel("route all noexport " + protocol)
-	return RunAndParse(cmd, parseRoutes)
+	cmd := b.routeQueryForChannel("route all noexport " + protocol)
+	return b.RunAndParse(cmd, parseRoutes)
 }
 
-func RoutesExportCount(protocol string) (Parsed, bool) {
-	cmd := routeQueryForChannel("route export "+protocol) + " count"
-	return RunAndParse(cmd, parseRoutesCount)
+// RoutesExportCount ..
+func (b *BirdWatcher) RoutesExportCount(protocol string) (Parsed, bool) {
+	cmd := b.routeQueryForChannel("route export "+protocol) + " count"
+	return b.RunAndParse(cmd, parseRoutesCount)
 }
 
-func RoutesTable(table string) (Parsed, bool) {
-	return RunAndParse("route table '"+table+"' all", parseRoutes)
+// RoutesTable ..
+func (b *BirdWatcher) RoutesTable(table string) (Parsed, bool) {
+	return b.RunAndParse("route table '"+table+"' all", parseRoutes)
 }
 
-func RoutesTableCount(table string) (Parsed, bool) {
-	return RunAndParse("route table '"+table+"' count", parseRoutesCount)
+// RoutesTableCount ..
+func (b *BirdWatcher) RoutesTableCount(table string) (Parsed, bool) {
+	return b.RunAndParse("route table '"+table+"' count", parseRoutesCount)
 }
 
-func RoutesLookupTable(net string, table string) (Parsed, bool) {
-	return RunAndParse("route for '"+net+"' table '"+table+"' all", parseRoutes)
+// RoutesLookupTable ..
+func (b *BirdWatcher) RoutesLookupTable(net string, table string) (Parsed, bool) {
+	return b.RunAndParse("route for '"+net+"' table '"+table+"' all", parseRoutes)
 }
 
-func RoutesLookupProtocol(net string, protocol string) (Parsed, bool) {
-	return RunAndParse("route for '"+net+"' protocol '"+protocol+"' all", parseRoutes)
+// RoutesLookupProtocol ..
+func (b *BirdWatcher) RoutesLookupProtocol(net string, protocol string) (Parsed, bool) {
+	return b.RunAndParse("route for '"+net+"' protocol '"+protocol+"' all", parseRoutes)
 }
 
-func RoutesPeer(peer string) (Parsed, bool) {
-	cmd := routeQueryForChannel("route export " + peer)
-	return RunAndParse(cmd, parseRoutes)
+// RoutesPeer ..
+func (b *BirdWatcher) RoutesPeer(peer string) (Parsed, bool) {
+	cmd := b.routeQueryForChannel("route export " + peer)
+	return b.RunAndParse(cmd, parseRoutes)
 }
 
-func RoutesDump() (Parsed, bool) {
+// RoutesDump ..
+func (b *BirdWatcher) RoutesDump() (Parsed, bool) {
 	if ParserConf.PerPeerTables {
-		return RoutesDumpPerPeerTable()
+		return b.RoutesDumpPerPeerTable()
 	}
 
-	return RoutesDumpSingleTable()
+	return b.RoutesDumpSingleTable()
 }
 
-func RoutesDumpSingleTable() (Parsed, bool) {
-	importedRes, cached := RunAndParse(routeQueryForChannel("route all"), parseRoutes)
-	filteredRes, _ := RunAndParse(routeQueryForChannel("route all filtered"), parseRoutes)
+// RoutesDumpSingleTable ..
+func (b *BirdWatcher) RoutesDumpSingleTable() (Parsed, bool) {
+	importedRes, cached := b.RunAndParse(b.routeQueryForChannel("route all"), parseRoutes)
+	filteredRes, _ := b.RunAndParse(b.routeQueryForChannel("route all filtered"), parseRoutes)
 
 	imported := importedRes["routes"]
 	filtered := filteredRes["routes"]
@@ -274,13 +307,14 @@ func RoutesDumpSingleTable() (Parsed, bool) {
 	return result, cached
 }
 
-func RoutesDumpPerPeerTable() (Parsed, bool) {
-	importedRes, cached := RunAndParse(routeQueryForChannel("route all"), parseRoutes)
+// RoutesDumpPerPeerTable ..
+func (b *BirdWatcher) RoutesDumpPerPeerTable() (Parsed, bool) {
+	importedRes, cached := b.RunAndParse(b.routeQueryForChannel("route all"), parseRoutes)
 	imported := importedRes["routes"]
 	filtered := []Parsed{}
 
 	// Get protocols with filtered routes
-	protocolsRes, _ := ProtocolsBgp()
+	protocolsRes, _ := b.ProtocolsBgp()
 	protocols := protocolsRes["protocols"].(Parsed)
 
 	for protocol, details := range protocols {
@@ -297,7 +331,7 @@ func RoutesDumpPerPeerTable() (Parsed, bool) {
 			continue // nothing to do here.
 		}
 		// Lookup filtered routes
-		pfilteredRes, _ := RoutesFiltered(protocol)
+		pfilteredRes, _ := b.RoutesFiltered(protocol)
 
 		pfiltered, ok := pfilteredRes["routes"].([]Parsed)
 		if !ok {
@@ -315,8 +349,8 @@ func RoutesDumpPerPeerTable() (Parsed, bool) {
 	return result, cached
 }
 
-func routeQueryForChannel(cmd string) string {
-	status, _ := Status()
+func (b *BirdWatcher) routeQueryForChannel(cmd string) string {
+	status, _ := b.Status()
 	birdStatus, ok := status["status"].(Parsed)
 	if !ok {
 		return cmd
@@ -332,5 +366,5 @@ func routeQueryForChannel(cmd string) string {
 		return cmd
 	}
 
-	return cmd + " where net.type = NET_IP" + IPVersion
+	return cmd + " where net.type = NET_IP" + b.IPVersion
 }
